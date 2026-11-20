@@ -1,4 +1,5 @@
 name: Build Boards
+
 on:
   workflow_dispatch: 
   push:
@@ -17,29 +18,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build and Merge Full Firmware
+      - name: Patch config.json
+        shell: bash
+        run: |
+          cd xiaozhi-esp32
+          echo "开始修改 config.json..."
+          python3 -c "import json; f=open('main/boards/otto-robot/config.json','r',encoding='utf-8'); d=json.load(f); f.close(); [b.update({'sdkconfig_append':[i for i in b.get('sdkconfig_append',[]) if 'WAKE_WORD' not in i and 'LANGUAGE' not in i and 'WN9' not in i] + ['CONFIG_LANGUAGE_ZH_CN=y', 'CONFIG_USE_ESP_WAKE_WORD=n', 'CONFIG_USE_AFE_WAKE_WORD=n', 'CONFIG_USE_CUSTOM_WAKE_WORD=y', 'CONFIG_CUSTOM_WAKE_WORD=\"ka ka\"', 'CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"卡卡\"']}) for b in d.get('builds',[]) if b.get('name')=='otto-robot']; f=open('main/boards/otto-robot/config.json','w',encoding='utf-8'); json.dump(d,f,indent=2,ensure_ascii=False); f.close(); print('Patch 成功！')"
+
+      - name: Build otto-robot
         shell: bash
         run: |
           source "$IDF_PATH/export.sh"
           cd xiaozhi-esp32
-          
           rm -f sdkconfig sdkconfig.old
           rm -rf build
-          
-          python scripts/gen_lang.py --language zh-CN --output main/assets/lang_config.h
-          idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3" build
-          
-          cd build
-          esptool.py --chip esp32s3 merge_bin -o otto-firmware-full.bin \
-            --flash_mode dio --flash_freq 40m --flash_size 16MB \
-            0x0 bootloader/bootloader.bin \
-            0x8000 partition_table/partition-table.bin \
-            0x10000 xiaozhi.bin \
-            0x810000 generated_assets.bin
+          python scripts/build.py otto-robot --name otto-robot
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: xiaozhi_otto-robot_full
-          path: xiaozhi-esp32/build/otto-firmware-full.bin
+          path: xiaozhi-esp32/build/merged-binary.bin
           if-no-files-found: error
