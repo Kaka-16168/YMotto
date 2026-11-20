@@ -53,11 +53,11 @@ jobs:
             ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-py${{ env.PYTHON_VERSION }}-
             ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-
 
-      # ---------- 关键修复：用 idf-installer-action 显式锁定 Python 3.12 ----------
+      # ---------- 改用官方 esp-idf-ci-action ----------
       - name: Install ESP-IDF ${{ env.IDF_VERSION }}
-        uses: espressif/idf-installer-action@v1
+        uses: espressif/esp-idf-ci-action@v1
         with:
-          version: ${{ env.IDF_VERSION }}
+          esp_idf_version: ${{ env.IDF_VERSION }}
           target: ${{ env.IDF_TARGET }}
           python_version: ${{ env.PYTHON_VERSION }}
 
@@ -140,8 +140,7 @@ jobs:
             exit 0
           fi
           echo "$SIGNING_KEY" > key.pem
-          # 此处替换为你的签名工具实际命令
-          echo "signing..." 
+          echo "signing..."
           mv build_output/otto-robot-merged.bin build_output/otto-robot-merged-signed.bin
 
   release:
