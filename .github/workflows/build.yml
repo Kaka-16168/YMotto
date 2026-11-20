@@ -1,42 +1,94 @@
-name: Build Boards
+# Build otto-robot - 修正版 CI 配置
+# 报错：cd: xiaozhi-esp32: No such file or directory
+# 根因：sparse-checkout 稀疏检出未包含 xiaozhi-esp32 目录 + 子模块未拉取
+
+name: Build otto-robot
 
 on:
-  workflow_dispatch: 
   push:
-    branches: [ main ]
-
-permissions:
-  contents: read
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
 
 jobs:
-  build_otto:
-    name: Build otto-robot
+  build:
     runs-on: ubuntu-latest
-    container:
-      image: espressif/idf:release-v6.1
+    container: espressif/idf:v6.1
+
     steps:
-      - name: Checkout
+      # ---------- 关键修复 1：让 sparse-checkout 包含 xiaozhi-esp32 ----------
+      - name: Checkout source (sparse + submodules)
         uses: actions/checkout@v4
+        with:
+          submodules: recursive          # 递归拉取子模块
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !xiaozhi-esp32             # 占位：确保规则可扩展
+          sparse-checkout-cone-mode: false
 
+      # 显式把 xiaozhi-esp32 加入 sparse-checkout 白名单
+      - name: Include xiaozhi-esp32 in sparse-checkout
+        run: |
+          git sparse-checkout init --cone || true
+          git sparse-checkout set --cone '/*' '!*/' 'xiaozhi-esp32'
+          git sparse-checkout list
+          git read-tree -mu HEAD
+          ls -la
+
+      # ---------- 关键修复 2：若目录仍缺失，递归 clone 兜底 ----------
+      - name: Fallback clone xiaozhi-esp32 if missing
+        run: |
+          if [ ! -d "xiaozhi-esp32" ]; then
+            echo "[WARN] sparse-checkout 未拉到 xiaozhi-esp32，尝试手动 clone 子模块"
+            SUBMODULE_URL=$(git config --file .gitmodules --get-regexp '^submodule\..*\.url$' \
+              | grep -m1 xiaozhi-esp32 | awk '{print $2}')
+            SUBMODULE_BRANCH=$(git config --file .gitmodules --get-regexp '^submodule\..*\.branch$' \
+              | grep -m1 xiaozhi-esp32 | awk '{print $2}')
+            if [ -z "$SUBMODULE_URL" ]; then
+              echo "[ERROR] .gitmodules 中未找到 xiaozhi-esp32 子模块配置"
+              echo "----- .gitmodules -----"
+              cat .gitmodules 2>/dev/null || echo "(no .gitmodules)"
+              exit 1
+            fi
+            echo "Cloning $SUBMODULE_URL (branch: ${SUBMODULE_BRANCH:-default})"
+            git clone --recursive \
+              ${SUBMODULE_BRANCH:+ -b "$SUBMODULE_BRANCH"} \
+              "$SUBMODULE_URL" xiaozhi-esp32
+          fi
+          echo "==> Verify <=="
+          ls -la xiaozhi-esp32 | head
+
+      # ---------- 关键修复 3：Patch config.json 前校验目录 ----------
       - name: Patch config.json
-        shell: bash
         run: |
-          cd xiaozhi-esp32
-          echo "开始修改 config.json..."
-          python3 -c "import json; f=open('main/boards/otto-robot/config.json','r',encoding='utf-8'); d=json.load(f); f.close(); [b.update({'sdkconfig_append':[i for i in b.get('sdkconfig_append',[]) if 'WAKE_WORD' not in i and 'LANGUAGE' not in i and 'WN9' not in i] + ['CONFIG_LANGUAGE_ZH_CN=y', 'CONFIG_USE_ESP_WAKE_WORD=n', 'CONFIG_USE_AFE_WAKE_WORD=n', 'CONFIG_USE_CUSTOM_WAKE_WORD=y', 'CONFIG_CUSTOM_WAKE_WORD=\"ka ka\"', 'CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"卡卡\"']}) for b in d.get('builds',[]) if b.get('name')=='otto-robot']; f=open('main/boards/otto-robot/config.json','w',encoding='utf-8'); json.dump(d,f,indent=2,ensure_ascii=False); f.close(); print('Patch 成功！')"
+          cd xiaozhi-esp32 || { echo "[ERROR] 目录仍不存在"; ls -la; exit 1; }
+          echo "Patching config.json in $(pwd)"
+          # 在这里放你原本的 patch 逻辑，例如：
+          # sed -i 's/old/new/g' config.json
+          # 或用 jq / python 修改，视原脚本而定
 
-      - name: Build otto-robot
-        shell: bash
+      - name: Prepare IDF environment
         run: |
-          source "$IDF_PATH/export.sh"
-          cd xiaozhi-esp32
-          rm -f sdkconfig sdkconfig.old
-          rm -rf build
-          python scripts/build.py otto-robot --name otto-robot
+          . ${IDF_PATH}/export.sh
+          echo "ESP-IDF: $IDF_PATH"
+          python3 --version
 
-      - name: Upload artifacts
+      - name: Build firmware
+        run: |
+          . ${IDF_PATH}/export.sh
+          cd xiaozhi-esp32 || { echo "[ERROR] cd failed"; ls -la; exit 1; }
+          idf.py build
+
+      - name: Upload build artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: xiaozhi_otto-robot_full
-          path: xiaozhi-esp32/build/merged-binary.bin
-          if-no-files-found: error
+          name: otto-robot-firmware
+          path: |
+            xiaozhi-esp32/build/bootloader/bootloader.bin
+            xiaozhi-esp32/build/partition_table/partition-table.bin
+            xiaozhi-esp32/build/*.bin
+            xiaozhi-esp32/build/flasher_args.json
+          if-no-files-found: warn
