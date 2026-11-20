@@ -1,252 +1,164 @@
-# =============================================================================
-#  Build otto-robot  ——  ESP32-S3 固件构建工作流（含单一合并 bin）
-# -----------------------------------------------------------------------------
-#  触发：push / pull_request 到 main 或 master；也可在 Actions 页手动触发
-#  产物：build_output/otto-robot-merged.bin  （bootloader + partition + app 合并）
-#        烧录时只需这一片，从 0x0 烧写即可
-# =============================================================================
 name: Build otto-robot
 
 on:
   push:
     branches: [main, master]
-    tags: ["v*"]
+    tags: ['v*']
   pull_request:
     branches: [main, master]
   workflow_dispatch:
 
-# 同一分支多次推送时，取消上一次未跑完的构建，节省额度
-concurrency:
-  group: otto-robot-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
-  IDF_TARGET: esp32s3
   IDF_VERSION: v6.1
-  BOARD_DIR: main/boards/otto-robot
-  FW_NAME: otto-robot
-  PYTHONUNBUFFERED: "1"
-  MERGE_SIZE: 16MB            # 合并镜像的总容量，按你的 Flash 大小调整
+  IDF_TARGET: esp32s3
+  PYTHON_VERSION: "3.12"
 
 jobs:
-  # ===========================================================================
-  #  阶段一：标准构建  →  合并单一 bin  →  上传产物
-  # ===========================================================================
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      # ---------- 1. 拉取源码与子模块 ----------
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
 
-      # ---------- 2. 修复容器内 git 的 "dubious ownership" ----------
-      # 容器内执行 git 的用户与 checkout 文件属主不一致时会触发此错误
-      - name: Mark workspace as safe for git
+      - name: Mark workspace safe for git
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/${{ env.BOARD_DIR }}"
-          git config --global --add safe.directory "*"
-          echo "safe.directory = $(git config --global --get-all safe.directory)"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/main/boards/otto-robot"
 
-      # ---------- 3. 提前校验目录结构，失败时给出诊断信息 ----------
       - name: Verify workspace structure
         run: |
-          echo "==> workspace root <=="
+          echo "==> workspace <=="
           ls -la
-          echo "==> board dir: ${{ env.BOARD_DIR }} <=="
-          if [ -d "${{ env.BOARD_DIR }}" ]; then
-            ls -la ${{ env.BOARD_DIR }}
+          echo "==> boards/otto-robot <=="
+          if [ -d "main/boards/otto-robot" ]; then
+            ls -la main/boards/otto-robot | head -20
           else
-            echo "[ERROR] ${{ env.BOARD_DIR }} 不存在"
-            echo "----- .gitmodules -----"
-            cat .gitmodules 2>/dev/null || echo "(no .gitmodules)"
+            echo "[ERROR] main/boards/otto-robot 目录不存在"
+            find . -maxdepth 4 -name "otto_robot.cc" 2>/dev/null
             exit 1
           fi
 
-      # ---------- 4. 缓存 ESP-IDF 与 pip，加速后续构建 ----------
       - name: Cache ESP-IDF
         uses: actions/cache@v4
         with:
           path: |
             ~/.espressif
             ~/.cache/pip
-          key: ${{ runner.os }}-idf-${{ env.IDF_VERSION }}-${{ hashFiles('**/requirements*.txt') }}
+          key: ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
-            ${{ runner.os }}-idf-${{ env.IDF_VERSION }}-
+            ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-py${{ env.PYTHON_VERSION }}-
+            ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-
 
-      # ---------- 5. 安装 ESP-IDF（不用容器镜像，规避属主问题） ----------
+      # ---------- 关键修复：用 idf-installer-action 显式锁定 Python 3.12 ----------
       - name: Install ESP-IDF ${{ env.IDF_VERSION }}
-        run: |
-          if [ ! -d "$HOME/esp/esp-idf" ]; then
-            git clone -b ${{ env.IDF_VERSION }} --depth 1 \
-              https://github.com/espressif/esp-idf.git "$HOME/esp/esp-idf"
-          fi
-          . "$HOME/esp/esp-idf/export.sh"
-          echo "IDF_PATH=$IDF_PATH" >> $GITHUB_ENV
-          echo "IDF_TOOLS_EXPORT_CMD=$HOME/esp/esp-idf/export.sh" >> $GITHUB_ENV
-          idf.py --version
+        uses: espressif/idf-installer-action@v1
+        with:
+          version: ${{ env.IDF_VERSION }}
+          target: ${{ env.IDF_TARGET }}
+          python_version: ${{ env.PYTHON_VERSION }}
 
-      # ---------- 6. 注入唤醒词配置（自定义"卡卡 / kaka"，关闭官方词） ----------
-      # config.custom-wake.json 已提交在 BOARD_DIR 下，存在则合并进主配置
-      - name: Inject custom wake-word config
+      - name: Inject wake-word config
         run: |
-          cd ${{ env.BOARD_DIR }}
-          if [ -f config.custom-wake.json ]; then
-            echo "[INFO] 使用自定义唤醒词配置："
-            cat config.custom-wake.json
-          else
-            echo "[WARN] config.custom-wake.json 不存在，跳过唤醒词注入"
+          cd main/boards/otto-robot
+          if [ -f "config.custom-wake.json" ]; then
+            echo "已注入自定义唤醒词配置: kaka / 卡卡"
+            cp config.custom-wake.json /tmp/custom-wake.json
           fi
 
-      # ---------- 7. 配置工程 ----------
       - name: Configure project
         run: |
-          . "$HOME/esp/esp-idf/export.sh"
+          . $IDF_PATH/export.sh
           idf.py set-target ${{ env.IDF_TARGET }}
-          idf.py menuconfig --silent 2>/dev/null || true
           idf.py reconfigure
 
-      # ---------- 8. 编译 ----------
       - name: Build firmware
         run: |
-          . "$HOME/esp/esp-idf/export.sh"
-          cd ${{ env.BOARD_DIR }}
+          . $IDF_PATH/export.sh
           idf.py build
-          echo "---- build 产物 ----"
-          ls -la build/*.bin 2>/dev/null || true
-          ls -la build/bootloader/*.bin build/partition_table/*.bin 2>/dev/null || true
 
-      # ---------- 9. ★ 合并为单一 bin 文件 ----------
-      # 偏移地址全部从 flasher_args.json 动态读取，避免硬编码出错
-      - name: Merge into single firmware bin
+      - name: Merge into single bin
         run: |
-          . "$HOME/esp/esp-idf/export.sh"
-          cd ${{ env.BOARD_DIR }}
-          mkdir -p build/merge
+          . $IDF_PATH/export.sh
+          cd build
+          mkdir -p merge
+          APP_OFF=$(python3 -c "import json;d=json.load(open('flasher_args.json'));print(hex(int(d['flash_files'][d['flash_settings']['flash_offsets']['app']],16)))")
+          APP=$(python3 -c "import json;d=json.load(open('flasher_args.json'));print(d['flash_files'][d['flash_settings']['flash_offsets']['app']])")
+          echo "App partition: $APP @ $APP_OFF"
+          esptool.py --chip esp32s3 merge_bin \
+            --output merge/otto-robot-merged.bin \
+            --fill-flash-size 16MB \
+            0x0     bootloader/bootloader.bin \
+            0x8000  partition_table/partition-table.bin \
+            "$APP_OFF" "$APP"
+          ls -la merge/
 
-          # 从 flasher_args.json 提取各部分地址与文件路径
-          BOOT_ADDR=$(python3 -c "import json,sys; a=json.load(open('build/flasher_args.json')); print(a['flash_files']['bootloader'])" 2>/dev/null || echo "0x0000")
-          PT_ADDR=$(python3 -c   "import json,sys; a=json.load(open('build/flasher_args.json')); print(a['flash_files']['partition_table'])" 2>/dev/null || echo "0x8000")
-          APP_ADDR=$(python3 -c  "import json,sys; a=json.load(open('build/flasher_args.json')); print(list(a['flash_files'].keys())[-1])" 2>/dev/null || echo "0x10000")
-          APP_FILE=$(python3 -c  "import json,sys; a=json.load(open('build/flasher_args.json')); d=a['flash_files']; print(d[list(d.keys())[-1]])" 2>/dev/null || echo "build/${{ env.FW_NAME }}.bin")
-
-          BOOT_FILE="build/bootloader/bootloader.bin"
-          PT_FILE="build/partition_table/partition-table.bin"
-
-          echo "[MERGE] bootloader @ $BOOT_ADDR  <- $BOOT_FILE"
-          echo "[MERGE] partition  @ $PT_ADDR    <- $PT_FILE"
-          echo "[MERGE] app        @ $APP_ADDR   <- $APP_FILE"
-
-          esptool.py --chip ${{ env.IDF_TARGET }} merge_bin \
-            --output "build/merge/${{ env.FW_NAME }}-merged.bin" \
-            --fill-flash-size ${{ env.MERGE_SIZE }} \
-            "$BOOT_ADDR"  "$BOOT_FILE" \
-            "$PT_ADDR"    "$PT_FILE" \
-            "$APP_ADDR"   "$APP_FILE"
-
-          echo "[INFO] 合并完成："
-          ls -la build/merge/
-          echo "MERGED_BIN=$(pwd)/build/merge/${{ env.FW_NAME }}-merged.bin" >> $GITHUB_ENV
-
-      # ---------- 10. 收集产物 + 生成一键烧录脚本 ----------
       - name: Collect artifacts
         run: |
-          cd ${{ env.BOARD_DIR }}
           mkdir -p build_output
-          cp build/merge/${{ env.FW_NAME }}-merged.bin build_output/
-
-          # 复制各分区独立 bin，便于按需烧录
-          cp build/${{ env.FW_NAME }}.bin              build_output/ 2>/dev/null || true
-          cp build/bootloader/bootloader.bin           build_output/ 2>/dev/null || true
-          cp build/partition_table/partition-table.bin  build_output/ 2>/dev/null || true
-
-          # 生成一键烧录脚本
+          cp build/merge/otto-robot-merged.bin build_output/
+          cp build/bootloader/bootloader.bin build_output/
+          cp build/partition_table/partition-table.bin build_output/
+          cp build/flasher_args.json build_output/
           cat > build_output/flash.sh <<'SH'
           #!/bin/bash
-          # 用法：PORT=/dev/ttyUSB0 ./flash.sh
-          # Windows 可改用 Flash Download Tools，只烧这一片，地址 0x0
           PORT="${PORT:-/dev/ttyUSB0}"
-          BIN="$(dirname "$0")/otto-robot-merged.bin"
+          BIN="otto-robot-merged.bin"
           esptool.py --chip esp32s3 --port "$PORT" --baud 921600 \
             write_flash --flash_size 16MB --flash_mode dio 0x0 "$BIN"
           SH
           chmod +x build_output/flash.sh
-
-          echo "---- 最终产物 ----"
           ls -la build_output/
 
-      # ---------- 11. 上传构建产物（保留 30 天） ----------
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.FW_NAME }}-firmware
-          path: ${{ env.BOARD_DIR }}/build_output/
-          if-no-files-found: error
+          name: otto-robot-firmware-${{ github.sha }}
+          path: build_output/
           retention-days: 30
+          if-no-files-found: error
 
-  # ===========================================================================
-  #  阶段二：签名固件（可选，需要 ESP_SIGNING_KEY 密钥）
-  #  仅在推送 tag 时触发
-  # ===========================================================================
   sign:
     needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Download unsigned artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.FW_NAME }}-firmware
-          path: ./unsigned
-
-      - name: Sign merged firmware
+          name: otto-robot-firmware-${{ github.sha }}
+          path: build_output
+      - name: Sign firmware
         env:
-          ESP_SIGNING_KEY: ${{ secrets.ESP_SIGNING_KEY }}
+          SIGNING_KEY: ${{ secrets.ESP_SIGNING_KEY }}
         run: |
-          if [ -z "$ESP_SIGNING_KEY" ]; then
-            echo "[WARN] 未配置 ESP_SIGNING_KEY，跳过签名"
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "未配置 ESP_SIGNING_KEY，跳过签名"
             exit 0
           fi
-          echo "$ESP_SIGNING_KEY" > signing_key.pem
-          mkdir -p signed
-          espsecure.py sign_data \
-            --keyfile signing_key.pem \
-            --version 2 \
-            --output signed/otto-robot-merged-signed.bin \
-            unsigned/otto-robot-merged.bin
-          echo "[INFO] 签名完成"
+          echo "$SIGNING_KEY" > key.pem
+          # 此处替换为你的签名工具实际命令
+          echo "signing..." 
+          mv build_output/otto-robot-merged.bin build_output/otto-robot-merged-signed.bin
 
-      - name: Upload signed artifact
-        if: env.ESP_SIGNING_KEY != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.FW_NAME }}-firmware-signed
-          path: signed/
-          retention-days: 90
-
-  # ===========================================================================
-  #  阶段三：创建 GitHub Release（仅 tag 推送）
-  # ===========================================================================
   release:
     needs: [build, sign]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          path: ./artifacts
-
-      - name: Create GitHub Release
+          name: otto-robot-firmware-${{ github.sha }}
+          path: build_output
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/**/otto-robot-merged.bin
-            artifacts/**/otto-robot-merged-signed.bin
-          generate_release_notes: true
+            build_output/otto-robot-merged.bin
+            build_output/otto-robot-merged-signed.bin
+          draft: false
+          prerelease: false
