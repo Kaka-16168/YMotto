@@ -1,65 +1,45 @@
-# Build otto-robot - 修正版 CI 配置
-# 问题：`cd xiaozhi-esp32: No such file or directory`
-# 根因：xiaozhi-esp32 为 git submodule，CI 未拉取子模块导致目录不存在
-
-name: Build otto-robot
-
+name: Build Boards
 on:
+  workflow_dispatch: 
   push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
-  workflow_dispatch:
+    branches: [ main ]
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  build_otto:
+    name: Build otto-robot
     runs-on: ubuntu-latest
-    container: espressif/idf:v6.1
-
+    container:
+      image: espressif/idf:release-v6.1
     steps:
-      - name: Checkout source with submodules
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # 关键修复：递归拉取所有子模块，避免 xiaozhi-esp32 目录缺失
-          submodules: recursive
-          fetch-depth: 0
 
-      - name: Verify workspace structure
+      - name: Build and Merge Full Firmware
+        shell: bash
         run: |
-          echo "==> Current workspace content <=="
-          ls -la
-          echo "==> Check xiaozhi-esp32 <=="
-          if [ -d "xiaozhi-esp32" ]; then
-            echo "[OK] xiaozhi-esp32 exists"
-            ls -la xiaozhi-esp32
-          else
-            echo "[ERROR] xiaozhi-esp32 NOT FOUND"
-            echo "Available directories:"
-            find . -maxdepth 2 -type d
-            exit 1
-          fi
+          source "$IDF_PATH/export.sh"
+          cd xiaozhi-esp32
+          
+          rm -f sdkconfig sdkconfig.old
+          rm -rf build
+          
+          python scripts/gen_lang.py --language zh-CN --output main/assets/lang_config.h
+          idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3" build
+          
+          cd build
+          esptool.py --chip esp32s3 merge_bin -o otto-firmware-full.bin \
+            --flash_mode dio --flash_freq 40m --flash_size 16MB \
+            0x0 bootloader/bootloader.bin \
+            0x8000 partition_table/partition-table.bin \
+            0x10000 xiaozhi.bin \
+            0x810000 generated_assets.bin
 
-      - name: Prepare IDF environment
-        run: |
-          . ${IDF_PATH}/export.sh
-          echo "ESP-IDF: $(idf --version 2>/dev/null || echo $IDF_PATH)"
-          python3 --version
-
-      - name: Build firmware
-        run: |
-          . ${IDF_PATH}/export.sh
-          # 防止路径不存在导致 cd 失败，先校验
-          cd xiaozhi-esp32 || { echo "cd failed, listing pwd:"; pwd; ls -la; exit 1; }
-          idf.py build
-
-      - name: Upload build artifacts
-        if: success()
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: otto-robot-firmware
-          path: |
-            xiaozhi-esp32/build/bootloader/bootloader.bin
-            xiaozhi-esp32/build/partition_table/partition-table.bin
-            xiaozhi-esp32/build/*.bin
-            xiaozhi-esp32/build/flasher_args.json
-          if-no-files-found: warn
+          name: xiaozhi_otto-robot_full
+          path: xiaozhi-esp32/build/otto-firmware-full.bin
+          if-no-files-found: error
