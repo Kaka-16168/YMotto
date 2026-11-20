@@ -1,161 +1,166 @@
-//--------------------------------------------------------------
-//-- Oscillator.pde
-//-- Generate sinusoidal oscillations in the servos
-//--------------------------------------------------------------
-//-- (c) Juan Gonzalez-Gomez (Obijuan), Dec 2011
-//-- (c) txp666 for esp32, 202503
-//-- GPL license
-//--------------------------------------------------------------
 #include "oscillator.h"
-
-#include <driver/ledc.h>
-#include <esp_timer.h>
-
-#include <algorithm>
-#include <cmath>
+#include "driver/ledc.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char* TAG = "Oscillator";
 
-extern unsigned long IRAM_ATTR millis();
+/* 脉宽范围：标准舵机 500us ~ 2500us，中位 1500us */
+static constexpr uint32_t kPulseMinUs = 500;
+static constexpr uint32_t kPulseMaxUs = 2500;
+static constexpr uint32_t kPulseRangeUs = kPulseMaxUs - kPulseMinUs;
 
-static ledc_channel_t next_free_channel = LEDC_CHANNEL_0;
+/* 角度容差：小于 1 度跳过写入，减少舵机抖动 */
+static constexpr float kAngleEpsilon = 1.0f;
 
-Oscillator::Oscillator(int trim) {
-    trim_ = trim;
-    diff_limit_ = 0;
-    is_attached_ = false;
-
-    sampling_period_ = 30;
-    period_ = 2000;
-    number_samples_ = period_ / sampling_period_;
-    inc_ = 2 * M_PI / number_samples_;
-
-    amplitude_ = 45;
-    phase_ = 0;
-    phase0_ = 0;
-    offset_ = 0;
-    stop_ = false;
-    rev_ = false;
-
-    pos_ = 90;
-    previous_millis_ = 0;
-}
+Oscillator::Oscillator() = default;
 
 Oscillator::~Oscillator() {
-    Detach();
+    Stop();
 }
 
-uint32_t Oscillator::AngleToCompare(int angle) {
-    return (angle - SERVO_MIN_DEGREE) * (SERVO_MAX_PULSEWIDTH_US - SERVO_MIN_PULSEWIDTH_US) /
-               (SERVO_MAX_DEGREE - SERVO_MIN_DEGREE) +
-           SERVO_MIN_PULSEWIDTH_US;
-}
-
-bool Oscillator::NextSample() {
-    current_millis_ = millis();
-
-    if (current_millis_ - previous_millis_ > sampling_period_) {
-        previous_millis_ = current_millis_;
-        return true;
+bool Oscillator::Attach(int pin, int channel, ledc_timer_bit_t resolution_bits,
+                        uint32_t freq_hz, uint32_t timer_index) {
+    if (pin < 0 || channel < 0 || channel > LEDC_CHANNEL_MAX) {
+        ESP_LOGE(TAG, "Attach 参数非法: pin=%d channel=%d", pin, channel);
+        return false;
     }
 
-    return false;
-}
+    pin_            = pin;
+    channel_        = channel;
+    timer_index_    = timer_index;
+    freq_hz_        = freq_hz;
+    resolution_bits_ = resolution_bits;
+    duty_max_       = (1u << static_cast<uint32_t>(resolution_bits)) - 1;
 
-void Oscillator::Attach(int pin, bool rev) {
-    if (is_attached_) {
-        Detach();
-    }
-
-    pin_ = pin;
-    rev_ = rev;
-
-    ledc_timer_config_t ledc_timer = {.speed_mode = LEDC_LOW_SPEED_MODE,
-                                      .duty_resolution = LEDC_TIMER_13_BIT,
-                                      .timer_num = LEDC_TIMER_1,
-                                      .freq_hz = 50,
-                                      .clk_cfg = LEDC_AUTO_CLK};
-    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
-
-    static int last_channel = 0;
-    last_channel = (last_channel + 1) % 7 + 1;
-    ledc_channel_ = (ledc_channel_t)last_channel;
-
-    ledc_channel_config_t ledc_channel = {.gpio_num = pin_,
-                                          .speed_mode = LEDC_LOW_SPEED_MODE,
-                                          .channel = ledc_channel_,
-                                          .intr_type = LEDC_INTR_DISABLE,
-                                          .timer_sel = LEDC_TIMER_1,
-                                          .duty = 0,
-                                          .hpoint = 0};
-    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
-
-    ledc_speed_mode_ = LEDC_LOW_SPEED_MODE;
-
-    // pos_ = 90;
-    // Write(pos_);
-    previous_servo_command_millis_ = millis();
-
-    is_attached_ = true;
-}
-
-void Oscillator::Detach() {
-    if (!is_attached_)
-        return;
-
-    ESP_ERROR_CHECK(ledc_stop(ledc_speed_mode_, ledc_channel_, 0));
-
-    is_attached_ = false;
-}
-
-void Oscillator::SetT(unsigned int T) {
-    period_ = T;
-
-    number_samples_ = period_ / sampling_period_;
-    inc_ = 2 * M_PI / number_samples_;
-}
-
-void Oscillator::SetPosition(int position) {
-    Write(position);
-}
-
-void Oscillator::Refresh() {
-    if (NextSample()) {
-        if (!stop_) {
-            int pos = std::round(amplitude_ * std::sin(phase_ + phase0_) + offset_);
-            if (rev_)
-                pos = -pos;
-            Write(pos + 90);
+    /* 首次使用时初始化定时器（同一定时器只配一次） */
+    static uint32_t initialized_timers = 0;
+    if ((initialized_timers & (1u << timer_index_)) == 0) {
+        ledc_timer_config_t tc = {};
+        tc.duty_resolution = resolution_bits_;
+        tc.freq_hz         = freq_hz_;
+        tc.speed_mode      = LEDC_LOW_SPEED_MODE;
+        tc.timer_num       = static_cast<ledc_timer_t>(timer_index_);
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+        tc.clk_cfg = LEDC_AUTO_CLK;
+#else
+        tc.clk_cfg = LEDC_AUTO_CLK;
+#endif
+        esp_err_t err = ledc_timer_config(&tc);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "ledc_timer_config 失败: %s", esp_err_to_name(err));
+            return false;
         }
+        initialized_timers |= (1u << timer_index_);
+    }
 
-        phase_ = phase_ + inc_;
+    ConfigureChannel();
+
+    /* 上电归中，避免舵机甩臂 */
+    SetAngle(SERVO_CENTER_ANGLE);
+    active_ = true;
+    attached_ = true;
+    return true;
+}
+
+void Oscillator::ConfigureChannel() {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    ledc_channel_config_t cc = {};
+    cc.gpio_num   = static_cast<gpio_num_t>(pin_);
+    cc.speed_mode = LEDC_LOW_SPEED_MODE;
+    cc.channel    = static_cast<ledc_channel_t>(channel_);
+    cc.intr_type  = LEDC_INTR_DISABLE;
+    cc.timer_sel  = static_cast<ledc_timer_t>(timer_index_);
+    cc.duty       = 0;
+    cc.hpoint     = 0;
+#else
+    ledc_channel_config_t cc = {};
+    cc.gpio_num   = static_cast<gpio_num_t>(pin_);
+    cc.speed_mode = LEDC_LOW_SPEED_MODE;
+    cc.channel    = static_cast<ledc_channel_t>(channel_);
+    cc.intr_type  = LEDC_INTR_DISABLE;
+    cc.timer_sel  = static_cast<ledc_timer_t>(timer_index_);
+    cc.duty       = 0;
+    cc.hpoint     = 0;
+#endif
+    esp_err_t err = ledc_channel_config(&cc);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ledc_channel_config 失败 pin=%d: %s", pin_, esp_err_to_name(err));
     }
 }
 
-void Oscillator::Write(int position) {
-    if (!is_attached_)
-        return;
+uint32_t Oscillator::AngleToDuty(float angle) {
+    if (angle < SERVO_MIN_ANGLE) angle = SERVO_MIN_ANGLE;
+    if (angle > SERVO_MAX_ANGLE) angle = SERVO_MAX_ANGLE;
 
-    long currentMillis = millis();
-    if (diff_limit_ > 0) {
-        int limit = std::max(
-            1, (((int)(currentMillis - previous_servo_command_millis_)) * diff_limit_) / 1000);
-        if (abs(position - pos_) > limit) {
-            pos_ += position < pos_ ? -limit : limit;
-        } else {
-            pos_ = position;
-        }
+    /* 角度 -> 脉宽(us) -> 占空比计数值 */
+    float pulse_us = static_cast<float>(kPulseMinUs) +
+                     (angle / 180.0f) * static_cast<float>(kPulseRangeUs);
+
+    /* 1 个计数 = 1e6 / freq / duty_max 微秒 */
+    float counts_per_us = static_cast<float>(duty_max_) /
+                          (1000000.0f / static_cast<float>(freq_hz_));
+    uint32_t duty = static_cast<uint32_t>(pulse_us * counts_per_us + 0.5f);
+    if (duty > duty_max_) duty = duty_max_;
+    return duty;
+}
+
+void Oscillator::SetAngle(float angle) {
+    if (!attached_) return;
+
+    float target = angle + static_cast<float>(trim_);
+    if (target < SERVO_MIN_ANGLE) target = SERVO_MIN_ANGLE;
+    if (target > SERVO_MAX_ANGLE) target = SERVO_MAX_ANGLE;
+
+    /* 变化太小就跳过，消除抖动 */
+    if (!active_ && (target - angle_) < kAngleEpsilon &&
+        (angle_ - target) < kAngleEpsilon) {
+        return;
+    }
+
+    angle_  = target;
+    active_ = true;
+
+    uint32_t duty = AngleToDuty(angle_);
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE,
+                             static_cast<ledc_channel_t>(channel_),
+                             duty, 0);
+#else
+    ledc_set_duty(LEDC_LOW_SPEED_MODE,
+                  static_cast<ledc_channel_t>(channel_), duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE,
+                     static_cast<ledc_channel_t>(channel_));
+#endif
+}
+
+void Oscillator::SetTrim(int8_t trim) {
+    if (trim < SERVO_TRIM_MIN) trim = SERVO_TRIM_MIN;
+    if (trim > SERVO_TRIM_MAX) trim = SERVO_TRIM_MAX;
+    trim_ = trim;
+}
+
+void Oscillator::Stop() {
+    if (!attached_) return;
+    active_ = false;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE,
+                             static_cast<ledc_channel_t>(channel_),
+                             0, 0);
+#else
+    ledc_set_duty(LEDC_LOW_SPEED_MODE,
+                  static_cast<ledc_channel_t>(channel_), 0);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE,
+                     static_cast<ledc_channel_t>(channel_));
+#endif
+}
+
+void Oscillator::SetEnable(bool enable) {
+    if (enable) {
+        active_ = true;
     } else {
-        pos_ = position;
+        Stop();
     }
-    previous_servo_command_millis_ = currentMillis;
-
-    int angle = pos_ + trim_;
-
-    angle = std::min(std::max(angle, 0), 180);
-
-    uint32_t duty = (uint32_t)(((angle / 180.0) * 2.0 + 0.5) * 8191 / 20.0);
-
-    ESP_ERROR_CHECK(ledc_set_duty(ledc_speed_mode_, ledc_channel_, duty));
-    ESP_ERROR_CHECK(ledc_update_duty(ledc_speed_mode_, ledc_channel_));
 }
