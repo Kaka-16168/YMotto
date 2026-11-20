@@ -1,18 +1,170 @@
 {
-    "type": "otto-robot",
-    "target": "esp32s3",
-    "builds": [
-        {
-            "name": "otto-robot",
-            "build_options": {
-                "camera_hmirror": true,
-                "camera_vflip": true
-            },
-            "sdkconfig_append": [
-                "CONFIG_HTTPD_WS_SUPPORT=y",
-                "CONFIG_CAMERA_OV2640=y",
-                "CONFIG_CAMERA_OV3660=y"
-            ]
-        }
-    ]
+  "name": "Otto Robot (ESP32-S3-N16R8)",
+  "platform": "esp32s3",
+  "flash_size": "16MB",
+  "psram_size": "8MB",
+  "psram_mode": "opi",
+  "extra_sdkconfig_options": [
+    "CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=n",
+    "CONFIG_PARTITION_TABLE_CUSTOM=y",
+    "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m.csv\"",
+    "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y",
+    "CONFIG_ESPTOOLPY_FLASHFREQ_80M=y",
+    "CONFIG_ESP32S3_SPIRAM_MODE_OCT=y",
+    "CONFIG_SPIRAM=y",
+    "CONFIG_SPIRAM_MODE_OCT=y",
+    "CONFIG_SPIRAM_SPEED_80M=y",
+    "CONFIG_SPIRAM_TYPE_AUTO=y",
+    "CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=n",
+    "CONFIG_SPIRAM_USE_MALLOC=y",
+    "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384",
+    "CONFIG_ESP_TASK_WDT_TIMEOUT_S=15",
+    "CONFIG_HTTPD_WS_SUPPORT=y",
+    "CONFIG_USE_DEVICE_AEC=y",
+    "CONFIG_USE_AUDIO_PROCESSOR=n",
+    "CONFIG_USE_WAKE_WORD=y",
+    "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+    "CONFIG_SR_MN_CN_MULTINET7_QUANT=y",
+    "CONFIG_CUSTOM_WAKE_WORD=\"ka ka\"",
+    "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"卡卡\"",
+    "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20",
+    "CONFIG_USE_WAKE_WORD_EN=n",
+    "CONFIG_USE_WAKE_WORD_HIESP=n",
+    "CONFIG_USE_WAKE_WORD_NIHAOZHIXIAOTTS=n",
+    "CONFIG_USE_OTA=y",
+    "CONFIG_USE_USB=n",
+    "CONFIG_USE_USB_CONSOLE=n",
+    "CONFIG_USE_WIFI=n",
+    "CONFIG_USE_BATTERY=n",
+    "CONFIG_USE_POWER_SAVE=n",
+    "CONFIG_USE_LED_INDICATOR=y",
+    "CONFIG_USE_SCREEN=y",
+    "CONFIG_USE_SERVO_MCP=y",
+    "CONFIG_USE_SDCARD=n"
+  ],
+  "sdkconfig_append": [
+    "CONFIG_CUSTOM_WAKE_WORD=\"ka ka\"",
+    "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"卡卡\"",
+    "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20"
+  ],
+  "on_boot": [
+    "SetSelfAssertion(true)"
+  ],
+  "wake_words": [
+    { "name": "卡卡", "pinyin": "ka ka", "threshold": 20, "builtin": false }
+  ],
+  "disabled_wake_words": ["Hi,ESP", "Alexa", "小爱同学", "你好小智"],
+  "ota": {
+    "mode": "manual",
+    "version": 1
+  },
+  "audio": {
+    "sample_rate": 16000,
+    "input_sample_rate": 16000,
+    "output_sample_rate": 24000,
+    "input_ref_sample_rate": 16000,
+    "i2s_method": "simplex",
+    "codec": "no_audio_codec",
+    "reference_source": "speaker",
+    "i2s_mic": {
+      "bclk": 4, "ws": 5, "din": 6
+    },
+    "i2s_spk": {
+      "dout": 7, "bclk": 15, "ws": 16
+    },
+    "use_wake_io": 16
+  },
+  "servo": {
+    "trim_min": -50,
+    "trim_max": 50,
+    "default_angle": 90,
+    "center_angle": 90,
+    "min_angle": 0,
+    "max_angle": 180,
+    "pwm_freq_hz": 50,
+    "timer_resolution_bits": 14,
+    "timer_index": 0,
+    "channels": {
+      "left_leg":      { "pin": 1,  "channel": 0 },
+      "right_leg":     { "pin": 2,  "channel": 1 },
+      "left_foot":     { "pin": 3,  "channel": 2 },
+      "right_foot":    { "pin": 11, "channel": 3 },
+      "left_hand":     { "pin": 12, "channel": 4 },
+      "right_hand":    { "pin": 13, "channel": 5 }
+    },
+    "center_offsets": {
+      "left_leg":   0,
+      "right_leg":  0,
+      "left_foot":  0,
+      "right_foot": 0,
+      "left_hand":  0,
+      "right_hand": 0
+    }
+  },
+  "display": {
+    "type": "st7789",
+    "interface": "spi",
+    "width": 240,
+    "height": 280,
+    "offset_x": 0,
+    "offset_y": 20,
+    "mirror_x": true,
+    "mirror_y": true,
+    "swap_xy": false,
+    "invert_color": true,
+    "rgb_order": "rgb",
+    "backlight_pin": 38,
+    "backlight_invert": true,
+    "backlight_initial": 90,
+    "cs": 41,
+    "dc": 40,
+    "rst": 45,
+    "mosi": 47,
+    "sclk": 21,
+    "spi_mode": 0,
+    "spi_clock_hz": 40000000,
+    "spi_host": 3,
+    "battery_icon": false,
+    "low_battery_popup": false,
+    "emoji_overlay": true,
+    "emoji_x": 168,
+    "emoji_y": 8,
+    "emoji_size": 48,
+    "status_font_size": 20,
+    "status_y": 232
+  },
+  "led": {
+    "type": "single",
+    "pin": 48,
+    "invert": false
+  },
+  "button": {
+    "boot": 0,
+    "volume_up": 14,
+    "volume_down": 21,
+    "touch": -1
+  },
+  "capacitive_buttons": false,
+  "battery": {
+    "enabled": false,
+    "adc_pin": -1,
+    "voltage_divider": 2.0,
+    "low_threshold": 3.4,
+    "critical_threshold": 3.2,
+    "low_popup": false,
+    "icon_visible": false
+  },
+  "camera": {
+    "enabled": false,
+    "probe_gpio": 16
+  },
+  "recovery": {
+    "long_press_ms": 3000,
+    "reset_pin": -1
+  },
+  "board_detection": {
+    "method": "auto",
+    "gpio15_pullup": true,
+    "gpio16_pullup": true
+  }
 }
