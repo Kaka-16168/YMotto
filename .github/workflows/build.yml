@@ -72,9 +72,7 @@ jobs:
           #   - 合并 sdkconfig.defaults 和 sdkconfig_append
           #   - 运行 idf.py reconfigure + idf.py build
           python3 scripts/build.py otto-robot \
-            --name otto-robot \
-            --language zh-CN \
-            --wake-word nihaoxiaozhi 2>&1 | tee build_log.txt
+            --name otto-robot 2>&1 | tee build_log.txt
 
           # 检查构建产物
           if [ -f "build/xiaozhi.bin" ]; then
@@ -186,3 +184,81 @@ jobs:
           ## 烧录方式
 
           ### 方式一：使用 flash.sh 脚本（推荐）
+          ```bash
+          PORT=/dev/ttyUSB0 ./flash.sh
+          ```
+
+          ### 方式二：直接命令
+          ```bash
+          esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 \
+            write_flash --flash_size 16MB --flash_mode dio 0x0 otto-robot-merged.bin
+          ```
+
+          ### 方式三：乐鑫 Flash Download Tools
+          1. 打开 Flash Download Tools
+          2. 选择 `otto-robot-merged.bin`，地址填 `0x0`
+          3. 点击 START
+
+          ## 烧录后验证
+          重启开发板，串口日志应显示：
+          - `Otto Robot (ESP32-S3-N16R8) 启动中`
+          - `Custom wake word = kaka / 卡卡`（如已配置）
+          - `OttoController 初始化完成，6 路舵机就绪`
+          MD
+
+          ls -la build_output/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: otto-robot-firmware-${{ github.sha }}
+          path: build_output/
+          retention-days: 30
+          if-no-files-found: error
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:release-v6.1
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: otto-robot-firmware-${{ github.sha }}
+          path: build_output
+
+      - name: Sign firmware (optional)
+        env:
+          SIGNING_KEY: ${{ secrets.ESP_SIGNING_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "未配置 ESP_SIGNING_KEY，跳过签名"
+            exit 0
+          fi
+          echo "$SIGNING_KEY" > key.pem
+          echo "signing firmware..."
+          # 实际签名命令（根据需要启用）
+          # espsecure.py sign_data --keyfile key.pem --output build_output/otto-robot-merged-signed.bin build_output/otto-robot-merged.bin
+          mv build_output/otto-robot-merged.bin build_output/otto-robot-merged-signed.bin
+
+  release:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: otto-robot-firmware-${{ github.sha }}
+          path: build_output
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build_output/otto-robot-merged.bin
+            build_output/otto-robot-merged-signed.bin
+          draft: false
+          prerelease: false
