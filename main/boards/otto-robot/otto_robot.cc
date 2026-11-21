@@ -12,7 +12,7 @@
 #include "esp_check.h"
 #include "esp_err.h"
 #include "esp_log.h"
-#include "esp_spi_flash.h"
+#include "esp_flash.h"
 #include "lcd_display.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
