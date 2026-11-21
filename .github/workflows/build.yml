@@ -12,6 +12,8 @@ env:
   IDF_VERSION: v5.4.1
   IDF_TARGET: esp32s3
   PYTHON_VERSION: "3.11"
+  # 修复：补上 CMake 需要的 CONFIG 环境变量
+  CONFIG: "1"
 
 jobs:
   build:
@@ -53,12 +55,13 @@ jobs:
             ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-py${{ env.PYTHON_VERSION }}-
             ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-
 
-      # ---------- 关键修复：换回 esp-idf-action@v1 ----------
+      # ---------- 用回官方正确的 action 名 ----------
       - name: Install ESP-IDF ${{ env.IDF_VERSION }}
-        uses: espressif/esp-idf-action@v1
+        uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: ${{ env.IDF_VERSION }}
           target: ${{ env.IDF_TARGET }}
+          python_version: ${{ env.PYTHON_VERSION }}
 
       - name: Inject wake-word config
         run: |
