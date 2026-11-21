@@ -296,7 +296,6 @@ private:
      *   "wake_words": []                          // 全部关闭
      * 若配置项不存在，默认启用 "kaka"。
      */
-    void ConfigureWakeWords();
 
 public:
     const HardwareConfig& GetHardwareConfig() const { return hw_config_; }
