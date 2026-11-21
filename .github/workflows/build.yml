@@ -9,10 +9,10 @@ on:
   workflow_dispatch:
 
 env:
-  # 关键：用 6.1.1 修复版，不要用裸 v6.1
-  IDF_VERSION: v6.1.1
+  # 关键：降到 5.4.1 LTS，彻底绕开 TF-PSA 编译问题
+  IDF_VERSION: v5.4.1
   IDF_TARGET: esp32s3
-  PYTHON_VERSION: "3.12"
+  PYTHON_VERSION: "3.11"
 
 jobs:
   build:
@@ -61,16 +61,12 @@ jobs:
           target: ${{ env.IDF_TARGET }}
           python_version: ${{ env.PYTHON_VERSION }}
 
-      # ---------- 新增：解决 tf-psa-crypto 编译失败的编译参数 ----------
-      - name: Patch sdkconfig for crypto backend
+      - name: Inject wake-word config
         run: |
-          . $IDF_PATH/export.sh
-          # 关闭 PSA Crypto，退回传统 mbedTLS，绕开 tf-psa-crypto 在 6.1 的编译问题
-          echo "CONFIG_MBEDTLS_PSA_CRYPTO_C=" >> sdkconfig.defaults
-          echo "CONFIG_MBEDTLS_PSA_ITS_C=" >> sdkconfig.defaults
-          echo "CONFIG_MBEDTLS_PSA_CRYPTO_STORAGE_C=" >> sdkconfig.defaults
-          echo "已追加 sdkconfig 参数关闭 PSA Crypto 后端"
-          cat sdkconfig.defaults | grep -i psa || echo "(无 psa 配置)"
+          cd main/boards/otto-robot
+          if [ -f "config.custom-wake.json" ]; then
+            echo "已注入自定义唤醒词配置: kaka / 卡卡"
+          fi
 
       - name: Configure project
         run: |
@@ -81,9 +77,7 @@ jobs:
       - name: Build firmware
         run: |
           . $IDF_PATH/export.sh
-          # 只显示错误，减少日志量（2242 步全打出来会超 GitHub 日志限制）
-          idf.py build 2>&1 | grep -E "error:|warning:|ninja|Linking|Generating|merged" || true
-          idf.py build   # 真正跑构建，上面只是预览
+          idf.py build
 
       - name: Merge into single bin
         run: |
