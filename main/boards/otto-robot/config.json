@@ -1,14 +1,25 @@
 {
   "type": "otto-robot",
-  "target": "esp32s3",
-  "builds": [
-    {
-      "name": "otto-robot",
-      "sdkconfig_append": [
-        "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m.csv\"",
-        "CONFIG_USE_DEVICE_AEC=y",
-        "CONFIG_HTTPD_WS_SUPPORT=y"
-      ]
-    }
+  "wake_word": "kaka",
+  "wake_words": [
+    "kaka"
+  ],
+  "custom_wake_phrases": [
+    "卡卡",
+    "kaka",
+    "KA KA"
+  ],
+  "reconnect_wifi": true,
+  "low_battery_popup": false,
+  "sdkconfig_append": [
+    "CONFIG_BOARD_TYPE_OTTO_ROBOT=y",
+    "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m.csv\"",
+    "CONFIG_USE_DEVICE_AEC=y",
+    "CONFIG_HTTPD_WS_SUPPORT=y",
+    "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+    "CONFIG_USE_ESP_WAKE_WORD=n",
+    "CONFIG_USE_AFE_WAKE_WORD=n",
+    "CONFIG_WAKE_WORD_DISABLED=n",
+    "CONFIG_CUSTOM_WAKE_WORD_MODEL=\"kaka\""
   ]
 }

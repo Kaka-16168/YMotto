@@ -4,6 +4,7 @@
 //--------------------------------------------------------------
 //-- (c) Juan Gonzalez-Gomez (Obijuan), Dec 2011
 //-- (c) txp666 for esp32, 202503
+//-- Enhanced for xiaozhi-esp32 Otto Robot (direct-angle control)
 //-- GPL license
 //--------------------------------------------------------------
 #ifndef __OSCILLATOR_H__
@@ -31,7 +32,12 @@ class Oscillator {
 public:
     Oscillator(int trim = 0);
     ~Oscillator();
+
+    // 两参数版：兼容旧调用方式，仅记录引脚与正反转
     void Attach(int pin, bool rev = false);
+    // 完整版：直接指定通道、分辨率、频率，供 OttoController 精确分配 LEDC 资源
+    bool Attach(int pin, int channel, ledc_timer_bit_t resolution_bits,
+                uint32_t freq_hz, uint32_t timer_num);
     void Detach();
 
     void SetA(unsigned int amplitude) { amplitude_ = amplitude; };
@@ -47,15 +53,22 @@ public:
     void Play() { stop_ = false; };
     void Reset() { phase_ = 0; };
     void Refresh();
+
+    // 单角度直接控制接口：Otto 动作库通过它把脚摆到固定角度
+    void SetAngle(float angle);
+    void SetEnable(bool enable);
     int GetPosition() { return pos_; }
 
 private:
+    void ConfigureChannel();
     bool NextSample();
     void Write(int position);
+    uint32_t AngleToDuty(float angle);
     uint32_t AngleToCompare(int angle);
 
 private:
     bool is_attached_;
+    bool enabled_;
 
     //-- Oscillators parameters
     unsigned int amplitude_;  //-- Amplitude (degrees)
@@ -69,7 +82,7 @@ private:
     int trim_;                      //-- Calibration offset
     double phase_;                  //-- Current phase
     double inc_;                    //-- Increment of phase
-    double number_samples_;         //-- Number of samples
+    double number_samples_;          //-- Number of samples
     unsigned int sampling_period_;  //-- sampling period (ms)
 
     long previous_millis_;
