@@ -9,15 +9,19 @@ on:
   workflow_dispatch:
 
 env:
-  IDF_VERSION: v5.4.1
-  IDF_TARGET: esp32s3
-  PYTHON_VERSION: "3.11"
-  # 修复：补上 CMake 需要的 CONFIG 环境变量
-  CONFIG: "1"
+  # 官方明确推荐 ESP-IDF release/v6.1，5.x 已不再支持
+  # 官方使用 Docker 容器 espressif/idf:release-v6.1
+  IDF_IMAGE: espressif/idf:release-v6.1
+  BOARD_DIR: otto-robot
+  BOARD_NAME: otto-robot
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    # 关键：官方使用 Docker 容器方式，直接在容器内构建
+    # 这样避免了所有 Python 版本、环境变量、CONFIG 等问题
+    container:
+      image: espressif/idf:release-v6.1
 
     steps:
       - name: Checkout source
@@ -29,136 +33,156 @@ jobs:
       - name: Mark workspace safe for git
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/main/boards/otto-robot"
 
-      - name: Verify workspace structure
+      - name: Verify board directory
         run: |
-          echo "==> workspace <=="
-          ls -la
-          echo "==> boards/otto-robot <=="
+          echo "==> Checking otto-robot board directory <=="
           if [ -d "main/boards/otto-robot" ]; then
-            ls -la main/boards/otto-robot | head -20
+            echo "✓ Found main/boards/otto-robot"
+            ls -la main/boards/otto-robot/
+            echo ""
+            echo "==> config.json content <=="
+            cat main/boards/otto-robot/config.json
           else
-            echo "[ERROR] main/boards/otto-robot 目录不存在"
-            find . -maxdepth 4 -name "otto_robot.cc" 2>/dev/null
+            echo "[ERROR] main/boards/otto-robot not found"
+            echo "==> Available boards <=="
+            ls main/boards/ 2>/dev/null || echo "No boards directory"
             exit 1
           fi
 
-      - name: Cache ESP-IDF
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.espressif
-            ~/.cache/pip
-          key: ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-py${{ env.PYTHON_VERSION }}-
-            ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-
-
-      # ---------- 用回官方正确的 action 名 ----------
-      - name: Install ESP-IDF ${{ env.IDF_VERSION }}
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: ${{ env.IDF_VERSION }}
-          target: ${{ env.IDF_TARGET }}
-          python_version: ${{ env.PYTHON_VERSION }}
-
-      - name: Inject wake-word config
+      - name: Build firmware via official scripts/build.py
+        shell: bash
         run: |
-          cd main/boards/otto-robot
-          if [ -f "config.custom-wake.json" ]; then
-            echo "已注入自定义唤醒词配置: kaka / 卡卡"
+          # 激活 ESP-IDF 环境
+          . "$IDF_PATH/export.sh"
+          idf.py --version
+          echo "Python: $(python3 --version)"
+
+          echo ""
+          echo "==> Listing available boards <=="
+          python3 scripts/build.py --list-boards 2>&1 | head -80
+
+          echo ""
+          echo "==> Building otto-robot <=="
+          # 官方推荐方式：通过 scripts/build.py 构建
+          # build.py 会自动处理：
+          #   - 读取 config.json 中的 target
+          #   - 配置目标芯片
+          #   - 设置 CONFIG 环境变量
+          #   - 合并 sdkconfig.defaults 和 sdkconfig_append
+          #   - 运行 idf.py reconfigure + idf.py build
+          python3 scripts/build.py otto-robot \
+            --name otto-robot \
+            --language zh-CN \
+            --wake-word nihaoxiaozhi 2>&1 | tee build_log.txt
+
+          # 检查构建产物
+          if [ -f "build/xiaozhi.bin" ]; then
+            echo "✓ build/xiaozhi.bin exists"
+            ls -la build/xiaozhi.bin
+          fi
+          if [ -f "build/merged-binary.bin" ]; then
+            echo "✓ build/merged-binary.bin exists (官方默认合并产物)"
+            ls -la build/merged-binary.bin
           fi
 
-      - name: Configure project
+      - name: Also create custom merged bin (alternative)
         run: |
-          . $IDF_PATH/export.sh
-          idf.py set-target ${{ env.IDF_TARGET }}
-          idf.py reconfigure
-
-      - name: Build firmware
-        run: |
-          . $IDF_PATH/export.sh
-          idf.py build
-
-      - name: Merge into single bin
-        run: |
-          . $IDF_PATH/export.sh
+          . "$IDF_PATH/export.sh"
           cd build
-          mkdir -p merge
-          APP_OFF=$(python3 -c "import json;d=json.load(open('flasher_args.json'));print(hex(int(d['flash_files'][d['flash_settings']['flash_offsets']['app']],16)))")
-          APP=$(python3 -c "import json;d=json.load(open('flasher_args.json'));print(d['flash_files'][d['flash_settings']['flash_offsets']['app']])")
-          echo "App partition: $APP @ $APP_OFF"
-          esptool.py --chip esp32s3 merge_bin \
-            --output merge/otto-robot-merged.bin \
-            --fill-flash-size 16MB \
-            0x0     bootloader/bootloader.bin \
-            0x8000  partition_table/partition-table.bin \
-            "$APP_OFF" "$APP"
+
+          # 如果官方脚本已经生成了 merged-binary.bin，直接使用
+          if [ -f "merged-binary.bin" ]; then
+            echo "Using official merged-binary.bin"
+            mkdir -p merge
+            cp merged-binary.bin merge/otto-robot-merged.bin
+          else
+            echo "Creating custom merged bin from components"
+            mkdir -p merge
+
+            # 从 flasher_args.json 读取 app 分区信息
+            python3 -c "
+            import json
+            d = json.load(open('flasher_args.json'))
+            app_key = d['flash_settings']['flash_offsets']['app']
+            app_off = hex(int(d['flash_files'][app_key], 16))
+            app_file = d['flash_files'][app_key]
+            print(f'{app_off} {app_file}')
+            " > /tmp/merge_args.txt
+
+            APP_OFF=$(cut -d' ' -f1 /tmp/merge_args.txt)
+            APP_FILE=$(cut -d' ' -f2 /tmp/merge_args.txt)
+
+            echo "App partition: $APP_FILE @ $APP_OFF"
+
+            esptool.py --chip esp32s3 merge_bin \
+              --output merge/otto-robot-merged.bin \
+              --fill-flash-size 16MB \
+              0x0     bootloader/bootloader.bin \
+              0x8000  partition_table/partition-table.bin \
+              "$APP_OFF" "$APP_FILE"
+          fi
+
           ls -la merge/
+          echo "==> Merged binary size <=="
+          du -h merge/otto-robot-merged.bin
 
       - name: Collect artifacts
         run: |
           mkdir -p build_output
-          cp build/merge/otto-robot-merged.bin build_output/
+
+          # 优先使用合并后的 bin
+          if [ -f "build/merge/otto-robot-merged.bin" ]; then
+            cp build/merge/otto-robot-merged.bin build_output/
+          elif [ -f "build/merged-binary.bin" ]; then
+            cp build/merged-binary.bin build_output/otto-robot-merged.bin
+          else
+            echo "[ERROR] No merged binary found"
+            ls build/*.bin build/**/*.bin 2>/dev/null
+            exit 1
+          fi
+
+          # 备用：单独的分区文件
           cp build/bootloader/bootloader.bin build_output/
           cp build/partition_table/partition-table.bin build_output/
           cp build/flasher_args.json build_output/
+
+          # 生成烧录脚本
           cat > build_output/flash.sh <<'SH'
           #!/bin/bash
+          # Otto Robot 烧录脚本
+          # 方式：使用合并后的单一 bin 文件，只需烧录一次
           PORT="${PORT:-/dev/ttyUSB0}"
           BIN="otto-robot-merged.bin"
+
+          echo "烧录 $BIN 到 $PORT ..."
           esptool.py --chip esp32s3 --port "$PORT" --baud 921600 \
             write_flash --flash_size 16MB --flash_mode dio 0x0 "$BIN"
+
+          echo "烧录完成！重启开发板查看日志："
+          echo "  esptool.py --chip esp32s3 --port $PORT monitor"
           SH
           chmod +x build_output/flash.sh
-          ls -la build_output/
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: otto-robot-firmware-${{ github.sha }}
-          path: build_output/
-          retention-days: 30
-          if-no-files-found: error
+          # 生成 README
+          cat > build_output/README.md <<'MD'
+          # Otto Robot 固件
 
-  sign:
-    needs: build
-    runs-on: ubuntu-24.04
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: otto-robot-firmware-${{ github.sha }}
-          path: build_output
-      - name: Sign firmware
-        env:
-          SIGNING_KEY: ${{ secrets.ESP_SIGNING_KEY }}
-        run: |
-          if [ -z "$SIGNING_KEY" ]; then
-            echo "未配置 ESP_SIGNING_KEY，跳过签名"
-            exit 0
-          fi
-          echo "$SIGNING_KEY" > key.pem
-          echo "signing..."
-          mv build_output/otto-robot-merged.bin build_output/otto-robot-merged-signed.bin
+          ## 编译信息
+          - 编译时间: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - ESP-IDF: release/v6.1
+          - 目标芯片: ESP32-S3
+          - 板型: otto-robot
 
-  release:
-    needs: [build, sign]
-    runs-on: ubuntu-24.04
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: otto-robot-firmware-${{ github.sha }}
-          path: build_output
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            build_output/otto-robot-merged.bin
-            build_output/otto-robot-merged-signed.bin
-          draft: false
-          prerelease: false
+          ## 文件说明
+          | 文件 | 说明 |
+          |------|------|
+          | `otto-robot-merged.bin` | 合并后的完整固件，从 0x0 开始烧录 |
+          | `bootloader.bin` | 引导加载程序（备用） |
+          | `partition-table.bin` | 分区表（备用） |
+          | `flasher_args.json` | 烧录参数 |
+          | `flash.sh` | 一键烧录脚本 |
+
+          ## 烧录方式
+
+          ### 方式一：使用 flash.sh 脚本（推荐）
