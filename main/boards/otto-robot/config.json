@@ -5,10 +5,22 @@
         {
             "name": "otto-robot",
             "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_OTTO_ROBOT=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/16m.csv\"",
                 "CONFIG_USE_DEVICE_AEC=y",
                 "CONFIG_HTTPD_WS_SUPPORT=y",
-                "CONFIG_WAKE_WORD_DISABLED=n"
+                "CONFIG_WAKE_WORD_DISABLED=n",
+                "CONFIG_USE_BATTERY=n",
+                "CONFIG_USE_POWER_SAVE=n",
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+                "CONFIG_CUSTOM_WAKE_WORD=\"kaka\"",
+                "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"卡卡\"",
+                "CONFIG_LANGUAGE_ZH_CN=y",
+                "CONFIG_USE_ESP_WAKE_WORD=n",
+                "CONFIG_USE_AFE_WAKE_WORD=n",
+                "CONFIG_USE_WAKE_WORD_EN=n",
+                "CONFIG_USE_WAKE_WORD_HIESP=n",
+                "CONFIG_USE_WAKE_WORD_NIHAOZHIXIAOTTS=n"
             ]
         }
     ]
