@@ -9,7 +9,6 @@ on:
   workflow_dispatch:
 
 env:
-  # 关键：降到 5.4.1 LTS，彻底绕开 TF-PSA 编译问题
   IDF_VERSION: v5.4.1
   IDF_TARGET: esp32s3
   PYTHON_VERSION: "3.11"
@@ -54,12 +53,12 @@ jobs:
             ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-py${{ env.PYTHON_VERSION }}-
             ${{ runner.os }}-esp-idf-${{ env.IDF_VERSION }}-
 
+      # ---------- 关键修复：换回 esp-idf-action@v1 ----------
       - name: Install ESP-IDF ${{ env.IDF_VERSION }}
-        uses: espressif/esp-idf-ci-action@v1
+        uses: espressif/esp-idf-action@v1
         with:
           esp_idf_version: ${{ env.IDF_VERSION }}
           target: ${{ env.IDF_TARGET }}
-          python_version: ${{ env.PYTHON_VERSION }}
 
       - name: Inject wake-word config
         run: |
