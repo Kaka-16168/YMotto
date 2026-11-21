@@ -16,7 +16,6 @@
 #include "lcd_display.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
-#include "otto_controller.h"
 #include "system_reset.h"
 #include "wifi_board.h"
 
