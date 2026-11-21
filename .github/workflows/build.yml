@@ -10,16 +10,12 @@ on:
 
 env:
   # 官方明确推荐 ESP-IDF release/v6.1，5.x 已不再支持
-  # 官方使用 Docker 容器 espressif/idf:release-v6.1
   IDF_IMAGE: espressif/idf:release-v6.1
-  BOARD_DIR: otto-robot
-  BOARD_NAME: otto-robot
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 关键：官方使用 Docker 容器方式，直接在容器内构建
-    # 这样避免了所有 Python 版本、环境变量、CONFIG 等问题
+    # 使用官方 Docker 容器，避免 Python 版本、CONFIG 环境变量等问题
     container:
       image: espressif/idf:release-v6.1
 
@@ -40,9 +36,6 @@ jobs:
           if [ -d "main/boards/otto-robot" ]; then
             echo "✓ Found main/boards/otto-robot"
             ls -la main/boards/otto-robot/
-            echo ""
-            echo "==> config.json content <=="
-            cat main/boards/otto-robot/config.json
           else
             echo "[ERROR] main/boards/otto-robot not found"
             echo "==> Available boards <=="
@@ -50,10 +43,37 @@ jobs:
             exit 1
           fi
 
+      - name: Merge custom wake-word config into config.json
+        run: |
+          cd main/boards/otto-robot
+          echo "==> Merging config.custom-wake.json into config.json <=="
+          if [ -f "config.custom-wake.json" ]; then
+            python3 merge_config.py
+          else
+            echo "[WARN] config.custom-wake.json not found, creating default..."
+            cat > config.custom-wake.json <<'EOF'
+          {
+            "wake_word": "kaka",
+            "wake_words": ["kaka"],
+            "custom_wake_phrases": ["卡卡", "kaka", "KA KA"],
+            "sdkconfig": {
+              "CONFIG_USE_CUSTOM_WAKE_WORD": "y",
+              "CONFIG_USE_ESP_WAKE_WORD": "n",
+              "CONFIG_USE_AFE_WAKE_WORD": "n",
+              "CONFIG_WAKE_WORD_DISABLED": "n",
+              "CONFIG_CUSTOM_WAKE_WORD_MODEL": "kaka"
+            }
+          }
+          EOF
+            python3 merge_config.py
+          fi
+          echo ""
+          echo "==> Final config.json <=="
+          cat config.json
+
       - name: Build firmware via official scripts/build.py
         shell: bash
         run: |
-          # 激活 ESP-IDF 环境
           . "$IDF_PATH/export.sh"
           idf.py --version
           echo "Python: $(python3 --version)"
@@ -71,8 +91,7 @@ jobs:
           #   - 设置 CONFIG 环境变量
           #   - 合并 sdkconfig.defaults 和 sdkconfig_append
           #   - 运行 idf.py reconfigure + idf.py build
-          python3 scripts/build.py otto-robot \
-            --name otto-robot 2>&1 | tee build_log.txt
+          python3 scripts/build.py otto-robot 2>&1 | tee build_log.txt
 
           # 检查构建产物
           if [ -f "build/xiaozhi.bin" ]; then
@@ -80,16 +99,15 @@ jobs:
             ls -la build/xiaozhi.bin
           fi
           if [ -f "build/merged-binary.bin" ]; then
-            echo "✓ build/merged-binary.bin exists (官方默认合并产物)"
+            echo "✓ build/merged-binary.bin exists"
             ls -la build/merged-binary.bin
           fi
 
-      - name: Also create custom merged bin (alternative)
+      - name: Create merged bin
         run: |
           . "$IDF_PATH/export.sh"
           cd build
 
-          # 如果官方脚本已经生成了 merged-binary.bin，直接使用
           if [ -f "merged-binary.bin" ]; then
             echo "Using official merged-binary.bin"
             mkdir -p merge
@@ -98,27 +116,25 @@ jobs:
             echo "Creating custom merged bin from components"
             mkdir -p merge
 
-            # 从 flasher_args.json 读取 app 分区信息
-            python3 -c "
+            APP_OFF=$(python3 -c "
             import json
             d = json.load(open('flasher_args.json'))
             app_key = d['flash_settings']['flash_offsets']['app']
             app_off = hex(int(d['flash_files'][app_key], 16))
             app_file = d['flash_files'][app_key]
             print(f'{app_off} {app_file}')
-            " > /tmp/merge_args.txt
+            ")
+            echo "App partition: $APP_OFF"
 
-            APP_OFF=$(cut -d' ' -f1 /tmp/merge_args.txt)
-            APP_FILE=$(cut -d' ' -f2 /tmp/merge_args.txt)
-
-            echo "App partition: $APP_FILE @ $APP_OFF"
+            APP_OFF_VAL=$(echo "$APP_OFF" | cut -d' ' -f1)
+            APP_FILE_VAL=$(echo "$APP_OFF" | cut -d' ' -f2)
 
             esptool.py --chip esp32s3 merge_bin \
               --output merge/otto-robot-merged.bin \
               --fill-flash-size 16MB \
               0x0     bootloader/bootloader.bin \
               0x8000  partition_table/partition-table.bin \
-              "$APP_OFF" "$APP_FILE"
+              "$APP_OFF_VAL" "$APP_FILE_VAL"
           fi
 
           ls -la merge/
@@ -129,7 +145,6 @@ jobs:
         run: |
           mkdir -p build_output
 
-          # 优先使用合并后的 bin
           if [ -f "build/merge/otto-robot-merged.bin" ]; then
             cp build/merge/otto-robot-merged.bin build_output/
           elif [ -f "build/merged-binary.bin" ]; then
@@ -140,16 +155,13 @@ jobs:
             exit 1
           fi
 
-          # 备用：单独的分区文件
           cp build/bootloader/bootloader.bin build_output/
           cp build/partition_table/partition-table.bin build_output/
           cp build/flasher_args.json build_output/
 
-          # 生成烧录脚本
           cat > build_output/flash.sh <<'SH'
           #!/bin/bash
           # Otto Robot 烧录脚本
-          # 方式：使用合并后的单一 bin 文件，只需烧录一次
           PORT="${PORT:-/dev/ttyUSB0}"
           BIN="otto-robot-merged.bin"
 
@@ -162,7 +174,6 @@ jobs:
           SH
           chmod +x build_output/flash.sh
 
-          # 生成 README
           cat > build_output/README.md <<'MD'
           # Otto Robot 固件
 
@@ -171,6 +182,7 @@ jobs:
           - ESP-IDF: release/v6.1
           - 目标芯片: ESP32-S3
           - 板型: otto-robot
+          - 唤醒词: 卡卡 / kaka
 
           ## 文件说明
           | 文件 | 说明 |
@@ -202,7 +214,7 @@ jobs:
           ## 烧录后验证
           重启开发板，串口日志应显示：
           - `Otto Robot (ESP32-S3-N16R8) 启动中`
-          - `Custom wake word = kaka / 卡卡`（如已配置）
+          - `Custom wake word = kaka / 卡卡`
           - `OttoController 初始化完成，6 路舵机就绪`
           MD
 
@@ -239,8 +251,6 @@ jobs:
           fi
           echo "$SIGNING_KEY" > key.pem
           echo "signing firmware..."
-          # 实际签名命令（根据需要启用）
-          # espsecure.py sign_data --keyfile key.pem --output build_output/otto-robot-merged-signed.bin build_output/otto-robot-merged.bin
           mv build_output/otto-robot-merged.bin build_output/otto-robot-merged-signed.bin
 
   release:
